@@ -9,6 +9,7 @@ import logging
 from ..merkle_crdt import MerkleCRDT
 from ..filesystem import FSOperations
 from .peer import Peer
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -142,16 +143,61 @@ class SyncProtocol:
             if op_hash in self.fs.tree.crdt.operations:
                 continue
                 
-            # Create operation in our CRDT
-            self.fs.tree.crdt.add_operation(
-                op_type=op_data["operation_type"],
+            # Add the operation to our CRDT with the original hash
+            self.fs.tree.crdt.operations[op_hash] = self.fs.tree.crdt.Operation(
+                timestamp=op_data["timestamp"],
+                replica_id=op_data["replica_id"],
+                operation_type=op_data["operation_type"],
                 path=op_data["path"],
                 payload=op_data["payload"],
                 dependencies=set(op_data.get("dependencies", []))
             )
+            # Add to Merkle tree
+            self.fs.tree.crdt.merkle_tree.add_leaf(op_hash, self.fs.tree.crdt.operations[op_hash])
+            
+            # Apply metadata updates based on operation type
+            op_type = op_data["operation_type"]
+            path = op_data["path"]
+            payload = op_data["payload"]
+            
+            if op_type == "create_metadata":
+                # Handle new metadata creation
+                inode = int(path)  # path is the inode number
+                is_directory = payload.get("is_directory", False)
+                # Create metadata without creating a new operation
+                now = time.time()
+                metadata = self.fs.metadata.Metadata(
+                    mode=0o755 if is_directory else 0o644,
+                    uid=0,
+                    gid=0,
+                    size=0,
+                    atime=now,
+                    mtime=now,
+                    ctime=now
+                )
+                self.fs.metadata.metadata[inode] = metadata
+                # Update any additional metadata fields
+                for key, value in payload.items():
+                    if key != "is_directory" and hasattr(metadata, key):
+                        setattr(metadata, key, value)
+                        
+            elif op_type == "update_metadata":
+                # Handle metadata updates
+                inode = int(path)  # path is the inode number
+                metadata = self.fs.metadata.get(inode)
+                if metadata:
+                    for key, value in payload.items():
+                        if hasattr(metadata, key):
+                            setattr(metadata, key, value)
+                
+            elif op_type == "delete_metadata":
+                # Handle metadata deletion
+                inode = int(path)  # path is the inode number
+                if inode in self.fs.metadata.metadata:
+                    del self.fs.metadata.metadata[inode]
             
             # If this is a file content operation, fetch the chunks
-            if op_data["operation_type"] == "write":
+            if op_type == "write":
                 await self._sync_file_content(op_data)
 
     async def _sync_file_content(self, op_data: dict) -> None:
