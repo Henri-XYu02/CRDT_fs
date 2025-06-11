@@ -116,7 +116,7 @@ class MerkleTree:
         self._find_differences(node1.left, node2.left, differences)
         self._find_differences(node1.right, node2.right, differences)
 
-    def _collect_leaves(self, node: MerkleNode, leaves: Set[str]) -> None:
+    def _collect_leaves(self, node: Optional[MerkleNode], leaves: Set[str]) -> None:
         """
         Collect all leaf hashes under a node.
         
