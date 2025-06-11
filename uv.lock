@@ -53,12 +53,14 @@ source = { virtual = "." }
 dependencies = [
     { name = "pyfuse3" },
     { name = "pyserde", extra = ["all"] },
+    { name = "trio" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "pyfuse3", specifier = ">=3.4.0" },
     { name = "pyserde", extras = ["all"], specifier = ">=0.24.0" },
+    { name = "trio", specifier = ">=0.30.0" },
 ]
 
 [[package]]

@@ -54,17 +54,19 @@ class MerkleCRDT:
     async def fload(self):
         # Loads the crdt from disk
         async with self.lock:
-            with open(self.fname, "r") as f:
-                self.tree = from_json(MerkleTree, f.read())
+            try:
+                with open(self.fname, "r") as f:
+                    self.tree = from_json(MerkleTree, f.read())
 
-                l: list[MerkleNode] = []
+                    l: list[MerkleNode] = []
 
-                self.topo(self.tree.nodes[self.tree.root], l)
+                    self.topo(self.tree.nodes[self.tree.root], l)
 
-                l.sort(key=lambda x: (x.height, x.replica))
+                    l.sort(key=lambda x: (x.height, x.replica))
 
-                self.apply_operations([i.value for i in l])
-
+                    self.apply_operations([i.value for i in l])
+            except FileNotFoundError:
+                pass # Do nothing if IO error
     def get_node(self, hash: str) -> MerkleNode | None:
         return self.tree.nodes.get(hash, None)
 

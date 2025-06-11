@@ -7,4 +7,21 @@ requires-python = ">=3.13"
 dependencies = [
     "pyfuse3>=3.4.0",
     "pyserde[all]>=0.24.0",
+    "trio>=0.30.0",
 ]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.13"
+typeCheckingMode = "basic"
+useLibraryCodeForTypes = true
+reportMissingImports = true
+include = ["src"]
+extraPaths = ["src"]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

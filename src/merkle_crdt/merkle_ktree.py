@@ -1,10 +1,12 @@
 import random
 from typing import Set, override
 import uuid
+
+import pyfuse3
 from merkle_crdt.merkle_crdt import MerkleCRDT
 
-ROOT_ID = 0
-TRASH_ID = 1
+ROOT_ID = pyfuse3.ROOT_INODE
+TRASH_ID = 3
 
 class MerkleKTree(MerkleCRDT):
     ktree: dict[int, tuple[int, str]]
@@ -20,9 +22,11 @@ class MerkleKTree(MerkleCRDT):
         super().__init__(path, replica)
         self.ktree = {}
         self.oplog = []
-        
+        self.child = {}
+        self.childlogs = {}
+        self.move((0, "root", 1))
 
-
+    # TODO: async io
     @override
     def apply_operation(self, op: list[str]):
         self.apply_operations([op])
@@ -30,6 +34,8 @@ class MerkleKTree(MerkleCRDT):
     def ancestor(self, parent, child):
         if parent == child:
             return True
+        if parent not in self.child:
+            return False
         for c in self.child[parent]:
             if self.ancestor(c, child):
                 return True
@@ -40,12 +46,12 @@ class MerkleKTree(MerkleCRDT):
         if len(ops) == 0:
             return
         # (height, replica, parent, meta, child)
-        ops_processed = [((int(i[0]), int(i[1])), int(i[2]), i[3], int(i[4])) for i in reversed(ops)]
+        ops_processed = [((int(i[0]), int(i[1])), int(i[2]), i[3], int(i[4])) for i in reversed(ops) if len(i) != 0]
         # Items are already ordered by timestamp, but we need to find where we start undoing
         # Already locked here
         # Undo items
         visited_parents = set()
-        while len(self.oplog) != 0 and self.oplog[-1][0] > ops_processed[-1]:
+        while len(self.oplog) != 0 and self.oplog[-1][0] > ops_processed[-1][0]:
             item = self.oplog.pop()
             if self.childlogs[item[4]] == len(self.oplog):
                 self.childlogs[item[4]].pop()
@@ -67,20 +73,29 @@ class MerkleKTree(MerkleCRDT):
             # Add to oplog by checking old parent
             oldp = self.ktree.get(v[3], None)
             self.oplog.append((v[0], oldp, v[1], v[2], v[3]))
+            # Fix crashing
+            if v[3] not in self.child:
+                self.child[v[3]] = set()
             # Check if operation is invalid, skip modifying state if so
             if self.ancestor(v[3], v[1]):
                 continue
             # Only do LWW check for valid operations
+            if v[3] not in self.childlogs:
+                self.childlogs[v[3]] = []
             self.childlogs[v[3]].append(len(self.oplog))
             # Now modify state
             self.ktree[v[3]] = (v[1], v[2])
-            if oldp is not None and (oldp[1], v[2]) in self.child[oldp[0]]:
+            if oldp is not None and (oldp[1], v[3]) in self.child[oldp[0]]:
                 self.child[oldp[0]].remove((oldp[1], v[3]))
+            if v[1] not in self.child:
+                self.child[v[1]] = set()
             self.child[v[1]].add((v[2], v[3]))
             visited_parents.add(v[1])
         # Technically done, but want to check if there's conflicts in filenames
         new_moves: list[tuple[int, str, int]] = []
         for parent in visited_parents:
+            if parent == TRASH_ID:
+                continue
             metas = {}
             interesting_metas = set()
             for child in self.child.get(parent, []):
@@ -103,10 +118,11 @@ class MerkleKTree(MerkleCRDT):
                     new_moves.append((last_op[2], s, child))
         for move in new_moves:
             self.move(move)
+        print(self.ktree, self.oplog, self.child, self.childlogs)
 
     def move(self, op: tuple[int, str, int]):
         root = self.tree.nodes[self.tree.root]
-        new_op = [str(root.height + 1), str(self.replica), str(op[0]), op[1], str(op[0])]
+        new_op = [str(root.height + 1), str(self.replica), str(op[0]), op[1], str(op[2])]
         self.apply_operation(new_op)
         new_node = self.new_node(new_op, {self.tree.root})
         self.put_node(new_node)
@@ -122,13 +138,13 @@ class MerkleKTree(MerkleCRDT):
 
     async def mkdir(self, parent: int, name: str) -> int:
         async with self.lock:
-            rand = (uuid.uuid1().int>>64 & ~(1 >> 64)) | (0 >> 64)
+            rand = (uuid.uuid1().int>>64 & ~(1 << 63)) | (0 << 64)
             self.move((parent, name, rand))
             return rand
 
     async def mkf(self, parent: int, name: str) -> int:
         async with self.lock:
-            rand = (uuid.uuid1().int>>64 & ~(1 >> 64)) | (1 >> 64)
+            rand = (uuid.uuid1().int>>64 & ~(1 << 63)) | (1 << 63)
             self.move((parent, name, rand))
             return rand
 
