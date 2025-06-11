@@ -5,7 +5,7 @@
       let pkgs = nixpkgs.legacyPackages.${system};
       in {
         devShell = pkgs.mkShell {
-          buildInputs = with pkgs; [ uv python313 ];
+          buildInputs = with pkgs; [ uv python313 pkg-config fuse3 ];
           nativeBuildInputs = with pkgs; [ ruff basedpyright ];
           shellHook = ''
             export UV_PYTHON=${pkgs.python313}

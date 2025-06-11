@@ -56,7 +56,14 @@ class MerkleCRDT:
         async with self.lock:
             with open(self.fname, "r") as f:
                 self.tree = from_json(MerkleTree, f.read())
-                self.topo(self.tree.nodes[self.tree.root])
+
+                l: list[MerkleNode] = []
+
+                self.topo(self.tree.nodes[self.tree.root], l)
+
+                l.sort(key=lambda x: (x.height, x.replica))
+
+                self.apply_operations([i.value for i in l])
 
     def get_node(self, hash: str) -> MerkleNode | None:
         return self.tree.nodes.get(hash, None)
@@ -75,13 +82,15 @@ class MerkleCRDT:
         new_node = MerkleNode(val, self.replica, height, value, children)
         return new_node
 
-    def topo(self, node: MerkleNode):
+    def topo(self, node: MerkleNode, l: list[MerkleNode]):
         if node.hash_value in self.applied_ops:
             return
         for child in node.children:
-            self.topo(self.tree.nodes[child])
+            self.topo(self.tree.nodes[child], l)
         self.applied_ops.add(node.hash_value)
-        self.apply_operation(node.value)
+        l.append(node)
+        # TODO: sort by height so things that rely on height locality are more efficient
+        # TODO: also add batching support since that suits our use case very nicely
 
 
     async def add_root(self, root: str):
@@ -89,7 +98,13 @@ class MerkleCRDT:
         async with self.lock:
             root_obj  = self.tree.nodes[root]
 
-            self.topo(root_obj)
+            l: list[MerkleNode] = []
+
+            self.topo(root_obj, l)
+
+            l.sort(key=lambda x: (x.height, x.replica))
+
+            self.apply_operations([i.value for i in l])
 
             new_node = self.new_node([], {root, self.tree.root})
             self.put_node(new_node)
@@ -99,3 +114,9 @@ class MerkleCRDT:
     def apply_operation(self, op: list[str]):
         # Meant to be implemented in a subclass
         pass
+
+    def apply_operations(self, ops: list[list[str]]):
+        # Meant to be implemented in a subclass
+        for op in ops:
+            self.apply_operation(op)
+
