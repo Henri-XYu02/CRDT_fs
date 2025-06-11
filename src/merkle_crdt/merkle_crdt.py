@@ -1,110 +1,101 @@
 """
 Core implementation of the Merkle-CRDT that combines CRDT operations with a Merkle tree structure.
 """
+import asyncio
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass
 import hashlib
 import time
+from serde import serde
+from serde.json import to_json, from_json
 
-from .merkle_tree import MerkleTree
-from .merkle_node import MerkleNode
 
-@dataclass
-class Operation:
-    """Represents a CRDT operation with its associated metadata."""
-    timestamp: float
-    replica_id: str
-    operation_type: str
-    path: str
-    payload: Any
-    dependencies: Set[str]  # Set of operation hashes this operation depends on
+@serde
+class MerkleNode:
+    hash_value: str # str of hex; serialization needs this to avoid collisions since we're using 128+bit hashes
+    replica: int
+    height: int
+    value: list[str] # 0th item: operation, 1+th item: args; don't want to fight generics
+    children: Set[str]
 
-    def compute_hash(self) -> str:
-        """Compute a cryptographic hash of the operation."""
-        content = f"{self.timestamp}:{self.replica_id}:{self.operation_type}:{self.path}:{self.payload}:{sorted(self.dependencies)}"
-        return hashlib.sha256(content.encode()).hexdigest()
+@serde
+class MerkleTree:
+    root: str
+    nodes: dict[str, MerkleNode]
 
 class MerkleCRDT:
     """
-    A CRDT implementation that uses a Merkle tree to track operations and their causal relationships.
-    This provides efficient synchronization and conflict resolution between replicas.
+    Requires subclassing to form any given crdt.
     """
-    def __init__(self, replica_id: str):
-        self.replica_id = replica_id
-        self.merkle_tree = MerkleTree()
-        self.operations: Dict[str, Operation] = {}  # Hash -> Operation
-        self.applied_ops: Set[str] = set()  # Set of applied operation hashes
+    tree: MerkleTree
+    applied_ops: Set[str]
+    lock: asyncio.Lock
+    fname: str
+    replica: int # Randomly generated, i64 (or hash of hostname or smth)
 
-    def add_operation(self, op_type: str, path: str, payload: Any, dependencies: Optional[Set[str]] = None) -> str:
-        """
-        Add a new operation to the CRDT.
-        
-        Args:
-            op_type: Type of operation (e.g., 'create', 'delete', 'update')
-            path: Filesystem path the operation applies to
-            payload: Operation-specific data
-            dependencies: Set of operation hashes this operation depends on
-            
-        Returns:
-            Hash of the new operation
-        """
-        op = Operation(
-            timestamp=time.time(),
-            replica_id=self.replica_id,
-            operation_type=op_type,
-            path=path,
-            payload=payload,
-            dependencies=dependencies or set()
-        )
-        
-        op_hash = op.compute_hash()
-        self.operations[op_hash] = op
-        self.merkle_tree.add_leaf(op_hash, op)
-        
-        return op_hash
+    def __init__(self, path: str, replica: int):
+        self.applied_ops = set()  # Set of applied operation hashes
+        self.lock = asyncio.Lock()
+        self.fname = path
+        self.replica = replica
+        self.tree = MerkleTree("", {})
+        new_node = self.new_node([], set())
+        self.tree.nodes[new_node.hash_value] = new_node
+        self.tree.root = new_node.hash_value
 
-    def get_missing_operations(self, other_merkle_tree: MerkleTree) -> List[str]:
-        """
-        Compare with another replica's Merkle tree to find missing operations.
-        
-        Args:
-            other_merkle_tree: Merkle tree from another replica
-            
-        Returns:
-            List of operation hashes that are missing from this replica
-        """
-        return self.merkle_tree.diff(other_merkle_tree)
+    async def fsync(self):
+        # Serializes the CRDT to disk; takes a lock so no operations happen concurrently
+        async with self.lock:
+            with open(self.fname, "w") as f:
+                f.write(to_json(self.tree))
+                f.flush()
 
-    def apply_operation(self, op_hash: str) -> bool:
-        """
-        Apply an operation if all its dependencies have been applied.
-        
-        Args:
-            op_hash: Hash of the operation to apply
-            
-        Returns:
-            True if operation was applied, False if dependencies are missing
-        """
-        if op_hash in self.applied_ops:
-            return True
 
-        op = self.operations.get(op_hash)
-        if not op:
-            return False
+    async def fload(self):
+        # Loads the crdt from disk
+        async with self.lock:
+            with open(self.fname, "r") as f:
+                self.tree = from_json(MerkleTree, f.read())
+                self.topo(self.tree.nodes[self.tree.root])
 
-        # Check if all dependencies are met
-        if not all(dep in self.applied_ops for dep in op.dependencies):
-            return False
+    def get_node(self, hash: str) -> MerkleNode | None:
+        return self.tree.nodes.get(hash, None)
 
-        # Apply the operation (actual implementation would depend on operation type)
-        self.applied_ops.add(op_hash)
-        return True
+    def put_node(self, node: MerkleNode):
+        self.tree.nodes[node.hash_value] = node
 
-    def get_state(self) -> Tuple[Dict[str, Operation], str]:
-        """
-        Get the current state of the CRDT and the root hash of the Merkle tree.
-        
-        Returns:
-            Tuple of (operations dict, root hash)
-        """
-        return self.operations, self.merkle_tree.get_root_hash() 
+    def new_node(self, value: list[str], children: set[str]) -> MerkleNode:
+        hasher = hashlib.sha1()
+        for item in value:
+            hasher.update(item.encode('utf-8'))
+        for item in sorted(children):
+            hasher.update(item.encode('utf-8'))
+        val = hasher.hexdigest()
+        height = max([self.tree.nodes[child].height for child in children] or [0]) + 1
+        new_node = MerkleNode(val, self.replica, height, value, children)
+        return new_node
+
+    def topo(self, node: MerkleNode):
+        if node.hash_value in self.applied_ops:
+            return
+        for child in node.children:
+            self.topo(self.tree.nodes[child])
+        self.applied_ops.add(node.hash_value)
+        self.apply_operation(node.value)
+
+
+    async def add_root(self, root: str):
+        # IMPORTANT PRECONDITION: ALL CHILDREN OF THE ROOT MUST BE ADDED
+        async with self.lock:
+            root_obj  = self.tree.nodes[root]
+
+            self.topo(root_obj)
+
+            new_node = self.new_node([], {root, self.tree.root})
+            self.put_node(new_node)
+            self.tree.root = new_node.hash_value
+
+
+    def apply_operation(self, op: list[str]):
+        # Meant to be implemented in a subclass
+        pass
