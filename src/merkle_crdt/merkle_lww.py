@@ -30,6 +30,7 @@ class MerkleLWWRegister(MerkleCRDT):
             new_node = self.new_node([str(self.won[0]), str(self.won[1]), self.value], {self.tree.root})
             self.put_node(new_node)
             self.tree.root = new_node.hash_value
+            self.applied_ops.add(new_node.hash_value)
 
 
     def read(self):

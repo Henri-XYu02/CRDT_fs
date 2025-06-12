@@ -37,7 +37,7 @@ class MerkleKTree(MerkleCRDT):
         if parent not in self.child:
             return False
         for c in self.child[parent]:
-            if self.ancestor(c, child):
+            if self.ancestor(c[1], child):
                 return True
         return False
 
@@ -53,7 +53,7 @@ class MerkleKTree(MerkleCRDT):
         visited_parents = set()
         while len(self.oplog) != 0 and self.oplog[-1][0] > ops_processed[-1][0]:
             item = self.oplog.pop()
-            if self.childlogs[item[4]] == len(self.oplog):
+            if self.childlogs[item[4]][-1] == len(self.oplog):
                 self.childlogs[item[4]].pop()
             self.child[item[2]].remove((item[3], item[4]))
             if item[1] is not None:
@@ -111,14 +111,14 @@ class MerkleKTree(MerkleCRDT):
                     last_op = self.oplog[self.childlogs[child][-1]]
                     i = 0
                     s = f"{meta}_{last_op[0][1]}_{i}"
-                    while s in meta:
+                    while s in metas[meta]:
                         i += 1
                         s = f"{meta}_{last_op[0][1]}_{i}"
 
                     new_moves.append((last_op[2], s, child))
         for move in new_moves:
             self.move(move)
-        print(self.ktree, self.oplog, self.child, self.childlogs)
+        # print(self.ktree, self.child, sep="\n")
 
     def move(self, op: tuple[int, str, int]):
         root = self.tree.nodes[self.tree.root]
@@ -127,6 +127,7 @@ class MerkleKTree(MerkleCRDT):
         new_node = self.new_node(new_op, {self.tree.root})
         self.put_node(new_node)
         self.tree.root = new_node.hash_value
+        self.applied_ops.add(new_node.hash_value)
 
 
     # OPERATIONS VISIBLE TO THE WORLD
@@ -138,7 +139,7 @@ class MerkleKTree(MerkleCRDT):
 
     async def mkdir(self, parent: int, name: str) -> int:
         async with self.lock:
-            rand = (uuid.uuid1().int>>64 & ~(1 << 63)) | (0 << 64)
+            rand = (uuid.uuid1().int>>64 & ~(1 << 63)) | (0 << 63)
             self.move((parent, name, rand))
             return rand
 
@@ -159,17 +160,5 @@ class MerkleKTree(MerkleCRDT):
     # TODO: implement special case handling for directories
     # Same name occupied by file and directory: Directory gets the filename, file gets renamed
     # Same dirname: Move operations are generated to merge the directories
-
-    async def write(self, val):
-        async with self.lock:
-            self.value = val
-            self.won = (self.won[0] + 1, self.replica)
-            new_node = self.new_node([str(self.won[0]), str(self.won[1]), self.value], {self.tree.root})
-            self.put_node(new_node)
-            self.tree.root = new_node.hash_value
-
-
-    def read(self):
-        return self.value
 
 

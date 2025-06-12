@@ -1,145 +1,92 @@
-"""
-Implementation of a peer in the distributed filesystem network.
-"""
 from typing import Optional, Dict, Any
 import asyncio
-import aiohttp
 import json
 import msgpack
+import httpx
+from serde.json import to_json
+import trio
+
+from filesystem.inode_store import InodeStore
+from merkle_crdt.merkle_crdt import MerkleCRDT
+from merkle_crdt.merkle_ktree import MerkleKTree
 
 class Peer:
-    """
-    Represents a peer in the distributed filesystem network.
-    Handles communication with a single remote peer.
-    """
-    def __init__(self, host: str, port: int):
+    lock: asyncio.Lock
+    host: str
+    port: int
+    last_time: int
+    inode_store: InodeStore
+    ktree: MerkleKTree
+    replica: int
+
+    def __init__(self, host: str, port: int, inode_store: InodeStore, ktree: MerkleKTree, replica: int):
         self.host = host
         self.port = port
-        self.session: Optional[aiohttp.ClientSession] = None
-        self.connected = False
+        self.lock = asyncio.Lock()
+        self.last_time = 0
+        self.inode_store = inode_store
+        self.ktree = ktree
+        self.replica = replica
 
-    async def connect(self) -> bool:
-        """
-        Establish connection with the peer.
-        
-        Returns:
-            True if connection was successful, False otherwise
-        """
-        if self.connected:
-            return True
-            
-        try:
-            self.session = aiohttp.ClientSession()
-            async with self.session.get(f"http://{self.host}:{self.port}/ping") as resp:
-                if resp.status == 200:
-                    self.connected = True
-                    return True
-        except Exception:
-            self.connected = False
-            if self.session:
-                await self.session.close()
-                self.session = None
-        return False
+    async def healthcheck(self):
+        async with httpx.AsyncClient() as client:
+            await client.get(f'http://{self.host}:{self.port}/healthcheck')
 
-    async def disconnect(self) -> None:
-        """Close connection with the peer."""
-        self.connected = False
-        if self.session:
-            await self.session.close()
-            self.session = None
 
-    async def get_merkle_root(self) -> Optional[str]:
-        """
-        Get the Merkle tree root hash from the peer.
-        
-        Returns:
-            Root hash if successful, None otherwise
-        """
-        if not self.connected or not self.session:
-            return None
-            
-        try:
-            async with self.session.get(f"http://{self.host}:{self.port}/merkle/root") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("root_hash")
-        except Exception:
-            pass
-        return None
 
-    async def get_merkle_diff(self, local_hash: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the difference between our Merkle tree and the peer's.
-        
-        Args:
-            local_hash: Our local root hash
-            
-        Returns:
-            Dict of differences if successful, None otherwise
-        """
-        if not self.connected or not self.session:
-            return None
-            
-        try:
-            async with self.session.post(
-                f"http://{self.host}:{self.port}/merkle/diff",
-                json={"local_hash": local_hash}
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-        except Exception:
-            pass
-        return None
+    async def push_all(self):
+        await self.healthcheck()
+        async with self.lock:
+            changes = {}
+            changes["root"] = self.ktree
+            new_changes = self.inode_store.inodes.copy()
+            for k, v in new_changes.items():
+                changes[str(k)] = v
+            await self.push_changelist(changes)
 
-    async def get_operations(self, hashes: list) -> Optional[Dict[str, Any]]:
-        """
-        Get specific operations from the peer.
-        
-        Args:
-            hashes: List of operation hashes to fetch
-            
-        Returns:
-            Dict of operations if successful, None otherwise
-        """
-        if not self.connected or not self.session:
-            return None
-            
-        try:
-            async with self.session.post(
-                f"http://{self.host}:{self.port}/operations",
-                json={"hashes": hashes}
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-        except Exception:
-            pass
-        return None
+    async def push_changed(self):
+        await self.healthcheck()
+        async with self.lock:
+            # Get changed - assume fstree has changes
+            changes = {}
+            changes["root"] = self.ktree
+            new_changes, ts = await self.inode_store.changes_since(self.last_time)
+            self.last_time = ts
+            for change in new_changes:
+                changes[str(change)] = await self.inode_store.open(change)
+            await self.push_changelist(changes)
 
-    async def get_chunk(self, chunk_hash: str) -> Optional[bytes]:
-        """
-        Get a specific data chunk from the peer.
-        
-        Args:
-            chunk_hash: Hash of the chunk to fetch
-            
-        Returns:
-            Chunk data if successful, None otherwise
-        """
-        if not self.connected or not self.session:
-            return None
-            
-        try:
-            async with self.session.get(
-                f"http://{self.host}:{self.port}/chunk/{chunk_hash}"
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-        except Exception:
-            pass
-        return None
+    async def push_changelist(self, changelist: dict[str, MerkleCRDT]):
+        # Add nodes until all data transferred
+        root = {}
+        new_nodes = {}
+        nodes_to_add = {}
+        for k, v in changelist.items():
+            root[k] = v.tree.root
+            new_nodes[k] = [to_json(v.tree.nodes[v.tree.root])]
+            nodes_to_add[k] = set()
+        while len(new_nodes) != 0:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(f'http://{self.host}:{self.port}/bulk_get_nodes_to_add', json=new_nodes)
+                newer_nodes = response.json()
+                new_nodes = {}
+                for k, v in newer_nodes.items():
+                    if len(v) != 0:
+                        new_nodes[k] = []
+                        for node in v:
+                            add = to_json(changelist[k].tree.nodes[node])
+                            if add not in nodes_to_add[k]:
+                                new_nodes[k].append(add)
+                                nodes_to_add[k].add(add)
+                        if len(new_nodes[k]) == 0:
+                            new_nodes.pop(k)
+        for k in nodes_to_add.keys():
+            nodes_to_add[k] = list(nodes_to_add[k])
+        #print("deciding add ", nodes_to_add)
+        #prinv("adding root ", root)
+        print("Pushing changelist")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f'http://{self.host}:{self.port}/bulk_add', json=nodes_to_add)
+            response = await client.post(f'http://{self.host}:{self.port}/bulk_root', json=root)
 
-    def __str__(self) -> str:
-        return f"Peer({self.host}:{self.port})"
 
-    def __repr__(self) -> str:
-        return self.__str__() 

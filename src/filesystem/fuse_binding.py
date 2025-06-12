@@ -48,8 +48,12 @@ class FuseOps(pyfuse3.Operations):
 
     async def create(self, parent_inode: int, name: bytes, mode: int, flags: int, 
                      ctx: pyfuse3.RequestContext) -> Tuple[pyfuse3.FileInfo, pyfuse3.EntryAttributes]:
-        """Create a file with permissions mode and open it with flags."""
-        new_inode = await self.fs_structure.mkf(parent_inode, name.decode())
+        # TODO: refactor to move fs tructure ops into merkle ktree
+        for child in self.fs_structure.child[self.hf(parent_inode)].copy():
+            if child[0] == name.decode():
+                raise pyfuse3.FUSEError(errno.EEXIST)
+
+        new_inode = await self.fs_structure.mkf(self.hf(parent_inode), name.decode())
         new_inode = self.fh(new_inode)
 
         return (await self.open(new_inode, flags, ctx), await self.getattr(new_inode, ctx))
@@ -74,13 +78,12 @@ class FuseOps(pyfuse3.Operations):
 
     async def readdir(self, fh: int, start_id: int, token: pyfuse3.ReaddirToken) -> None:
         """Read entries in open directory fh."""
-        vals = list(sorted((self.fs_structure.child[self.hf(fh)])))
+        vals = list(sorted((self.fs_structure.child[self.hf(fh)].copy())))
         # Don't call readdir_reply - just return
         for i in range(start_id, len(self.fs_structure.child[self.hf(fh)])):
             child = vals[i]
             if not pyfuse3.readdir_reply(token, child[0].encode(), await self.getattr(self.fh(child[1])), i + 1):
                 return
-        pass
 
 
     async def getattr(self, inode, ctx=None):
@@ -103,13 +106,17 @@ class FuseOps(pyfuse3.Operations):
     async def mkdir(self, parent_inode: int, name: bytes, mode: int, 
                     ctx: pyfuse3.RequestContext) -> pyfuse3.EntryAttributes:
         """Create a directory."""
-        new_inode = await self.fs_structure.mkdir(parent_inode, name.decode())
+        for child in self.fs_structure.child[self.hf(parent_inode)].copy():
+            if child[0] == name.decode():
+                raise pyfuse3.FUSEError(errno.EEXIST)
+
+        new_inode = await self.fs_structure.mkdir(self.hf(parent_inode), name.decode())
         new_inode = self.fh(new_inode)
         return await self.getattr(new_inode)
 
     async def rmdir(self, parent_inode: int, name: bytes, ctx: pyfuse3.RequestContext) -> None:
         """Remove directory name."""
-        for child in self.fs_structure.child[self.hf(parent_inode)]:
+        for child in self.fs_structure.child[self.hf(parent_inode)].copy():
             if child[0] == name.decode():
                 await self.fs_structure.remove(child[1])
 
@@ -120,9 +127,15 @@ class FuseOps(pyfuse3.Operations):
             if child[0] == name.decode():
                 await self.fs_structure.remove(child[1])
 
-    async def rename(self, parent_inode_old: int, name_old: str, parent_inode_new: int, 
-                     name_new: str, flags: int, ctx: pyfuse3.RequestContext) -> None:
+    async def rename(self, parent_inode_old: int, name_old: bytes, parent_inode_new: int, 
+                     name_new: bytes, flags: int, ctx: pyfuse3.RequestContext) -> None:
         """Rename a directory entry."""
-        for child in self.fs_structure.child[self.hf(parent_inode_old)]:
-            if child[0] == name_old:
-                await self.fs_structure.rename(child[1], self.hf(parent_inode_new), name_new)
+        for child in self.fs_structure.child[self.hf(parent_inode_new)].copy():
+            if child[0] == name_new.decode():
+                raise pyfuse3.FUSEError(errno.EEXIST)
+
+        print(parent_inode_old, name_old, parent_inode_new, name_new)
+
+        for child in self.fs_structure.child[self.hf(parent_inode_old)].copy():
+            if child[0] == name_old.decode():
+                await self.fs_structure.rename(child[1], self.hf(parent_inode_new), name_new.decode())

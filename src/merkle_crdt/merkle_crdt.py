@@ -8,6 +8,7 @@ import hashlib
 import time
 from serde import serde
 from serde.json import to_json, from_json
+import trio
 
 
 @serde
@@ -98,6 +99,28 @@ class MerkleCRDT:
     async def add_root(self, root: str):
         # IMPORTANT PRECONDITION: ALL CHILDREN OF THE ROOT MUST BE ADDED
         async with self.lock:
+            # If new root is a subtree of us
+            if root in self.applied_ops:
+                #print("DECIDED OLD ROOT", root)
+                return
+            # If we are a subtree of new root
+            def rec(h):
+                if h == self.tree.root:
+                    return True
+                if h in self.applied_ops:
+                    return False
+                if h not in self.tree.nodes:
+                    #print("IMPOSSIBLE: ", h, self.tree.nodes, self.fname)
+                    pass
+                for c in self.tree.nodes[h].children:
+                    if rec(c):
+                        return True
+                return False
+            should_use_old_root = rec(root)
+            # Otherwise, merge both
+            if root not in self.tree.nodes:
+                #print("IMPOSSIBLE: ", root, self.tree.nodes, self.fname)
+                pass
             root_obj  = self.tree.nodes[root]
 
             l: list[MerkleNode] = []
@@ -108,9 +131,15 @@ class MerkleCRDT:
 
             self.apply_operations([i.value for i in l])
 
+            if should_use_old_root:
+                self.tree.root = root
+                #print("DECIDED OLD PEER ROOT", root)
+                return
+
             new_node = self.new_node([], {root, self.tree.root})
             self.put_node(new_node)
             self.tree.root = new_node.hash_value
+            #print("DECIDED NEW ROOT", new_node.hash_value)
 
 
     def apply_operation(self, op: list[str]):

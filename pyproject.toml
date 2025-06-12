@@ -5,9 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.115.12",
+    "httpx>=0.28.1",
     "pyfuse3>=3.4.0",
     "pyserde[all]>=0.24.0",
     "trio>=0.30.0",
+    "trio-asyncio>=0.15.0",
+    "uvicorn>=0.34.3",
 ]
 
 [tool.pyright]
