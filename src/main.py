@@ -21,7 +21,7 @@ import pyfuse3.asyncio
 
 from filesystem.fuse_binding import FuseOps
 from filesystem.inode_store import InodeStore, LWWInodeStore
-from merkle_crdt.merkle_ktree import MerkleKTree
+from merkle_crdt.merkle_ktree import TRASH_ID, MerkleKTree
 from merkle_crdt.merkle_lww import MerkleLWWRegister
 from networking.api_server import APIHandler
 from networking.peer import Peer
@@ -94,6 +94,13 @@ async def main() -> None:
     fs_structure = MerkleKTree(os.path.join(config.basepath, "ftree.json"), replica)
 
     await fs_structure.fload()
+
+
+    for (k, v) in fs_structure.child.items():
+        if k != TRASH_ID:
+            for child in v:
+                await inode_store.open(child[1])
+
     pyfuse3.asyncio.enable()
     pyfuse3.init(FuseOps(fs_structure, inode_store), config.mountpoint)
     app = fastapi.FastAPI()
