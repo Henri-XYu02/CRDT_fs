@@ -250,7 +250,6 @@ class FilesystemEvaluator:
         
         # Read the CSV data
         df = pd.read_csv(csv_file)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
         
         # Create figure with 3 subplots
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 15))
@@ -262,7 +261,7 @@ class FilesystemEvaluator:
             ax1.plot(peer_data['timestamp'], peer_data['cumulative_files'], 
                     label=f'{peer_count} peer{"s" if peer_count > 1 else ""}')
         ax1.set_title('Cumulative File Count Over Time (Create Empty Files)')
-        ax1.set_xlabel('Time')
+        ax1.set_xlabel('Time (seconds)')
         ax1.set_ylabel('Number of Files')
         ax1.legend()
         ax1.grid(True)
@@ -273,8 +272,8 @@ class FilesystemEvaluator:
             peer_data = create_with_data[create_with_data['peer_count'] == peer_count]
             ax2.plot(peer_data['timestamp'], peer_data['cumulative_data'], 
                     label=f'{peer_count} peer{"s" if peer_count > 1 else ""}')
-        ax2.set_title('Cumulative Data Written (Create with 4KB Data)')
-        ax2.set_xlabel('Time')
+        ax2.set_title('Cumulative Data Written (Create with 4B Data)')
+        ax2.set_xlabel('Time (seconds)')
         ax2.set_ylabel('Data Written (bytes)')
         ax2.legend()
         ax2.grid(True)
@@ -285,8 +284,8 @@ class FilesystemEvaluator:
             peer_data = append_data[append_data['peer_count'] == peer_count]
             ax3.plot(peer_data['timestamp'], peer_data['cumulative_data'], 
                     label=f'{peer_count} peer{"s" if peer_count > 1 else ""}')
-        ax3.set_title('Cumulative Data Written (Append 4KB Data)')
-        ax3.set_xlabel('Time')
+        ax3.set_title('Cumulative Data Written (Append 4B Data)')
+        ax3.set_xlabel('Time (seconds)')
         ax3.set_ylabel('Data Written (bytes)')
         ax3.legend()
         ax3.grid(True)
@@ -294,6 +293,164 @@ class FilesystemEvaluator:
         # Adjust layout and save
         plt.tight_layout()
         plt.savefig('networked_volume_graphs.png')
+        plt.close()
+
+    async def test_sync_performance(self):
+        """Test sync performance with different file sizes and counts"""
+        import csv
+        import subprocess
+        import time
+        from datetime import datetime
+        import matplotlib.pyplot as plt
+        import pandas as pd
+        import numpy as np
+
+        # Test configurations
+        file_sizes = [1024, 10*1024, 100*1024]
+        file_counts = [10, 100, 500]
+        peer_count = 2  # Test with 2 peers for simplicity
+
+        # Create CSV file for logging
+        csv_file = "sync_performance_test.csv"
+        with open(csv_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['file_size', 'file_count', 'sync_time', 'total_data'])
+
+        # Setup mount points and base paths
+        base_mounts = [f"/tmp/mount{i}" for i in range(peer_count)]
+        base_paths = [f"/tmp/basepath{i}" for i in range(peer_count)]
+        base_ports = [8000 + i for i in range(peer_count)]
+
+        # Clean up and create directories
+        for mount in base_mounts:
+            if os.path.exists(mount):
+                os.system(f"rm -rf {mount}")
+            os.makedirs(mount, exist_ok=True)
+
+        for base_path in base_paths:
+            if os.path.exists(base_path):
+                os.system(f"rm -rf {base_path}")
+            os.makedirs(base_path, exist_ok=True)
+
+        try:
+            # Create config files and start volumes
+            volumes = []
+            for i in range(peer_count):
+                config = {
+                    "replica": i + 1,
+                    "peers": [f"localhost:{p}" for p in base_ports if p != base_ports[i]],
+                    "basepath": base_paths[i],
+                    "mountpoint": base_mounts[i],
+                    "host": "localhost",
+                    "port": base_ports[i]
+                }
+                
+                config_path = f"config{i}.json"
+                with open(config_path, 'w') as f:
+                    f.write(to_json(config))
+                
+                process = subprocess.Popen(['python', 'src/main.py', config_path])
+                volumes.append(process)
+                time.sleep(10)  # Wait for volume to mount
+
+            # Run tests for each file size and count combination
+            for file_size in file_sizes:
+                for file_count in file_counts:
+                    print(f"\nTesting with {file_count} files of size {file_size/1024:.1f}KB")
+                    
+                    # Create files on first peer
+                    for i in range(file_count):
+                        filename = f"test_file_{i}.dat"
+                        filepath = Path(base_mounts[0]) / filename
+                        with open(filepath, 'wb') as f:
+                            f.write(os.urandom(file_size))
+                    
+                    # Wait for first file to appear on second peer to start timing
+                    while len(list(Path(base_mounts[1]).glob("test_file_*.dat"))) == 0:
+                        time.sleep(0.001)
+                    start_time = time.time()
+                    
+                    # Wait for all files to appear on second peer
+                    while len(list(Path(base_mounts[1]).glob("test_file_*.dat"))) < file_count:
+                        time.sleep(0.001)
+                    
+                    sync_time = time.time() - start_time
+                    total_data = file_size * file_count
+                    
+                    # Log results
+                    with open(csv_file, 'a', newline='') as f:
+                        writer = csv.writer(f)
+                        writer.writerow([file_size, file_count, sync_time, total_data])
+                    
+                    print(f"Sync completed in {sync_time:.2f} seconds")
+                    
+                    # Clean up files
+                    for i in range(file_count):
+                        filename = f"test_file_{i}.dat"
+                        os.remove(Path(base_mounts[0]) / filename)
+                        if os.path.exists(Path(base_mounts[1]) / filename):
+                            os.remove(Path(base_mounts[1]) / filename)
+
+            # Generate plots
+            self.generate_sync_performance_graphs(csv_file)
+
+        finally:
+            # Cleanup
+            for process in volumes:
+                process.terminate()
+                process.wait()
+            
+            # Clean up config files and mount points
+            for i in range(peer_count):
+                os.remove(f"config{i}.json")
+                subprocess.run(['fusermount', '-u', base_mounts[i]], check=False)
+                await asyncio.sleep(1)
+
+        return csv_file
+
+    def generate_sync_performance_graphs(self, csv_file: str):
+        """Generate graphs from the sync performance test data"""
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Read the CSV data
+        df = pd.read_csv(csv_file)
+        
+        # Create figure with 2 subplots
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        
+        # Plot 1: Sync Time vs File Count for different file sizes
+        for file_size in df['file_size'].unique():
+            size_data = df[df['file_size'] == file_size]
+            ax1.plot(size_data['file_count'], size_data['sync_time'], 
+                    marker='o', label=f'{file_size/1024:.1f}KB')
+        
+        ax1.set_title('Sync Time vs Number of Files')
+        ax1.set_xlabel('Number of Files')
+        ax1.set_ylabel('Sync Time (seconds)')
+        ax1.legend(title='File Size')
+        ax1.grid(True)
+        
+        # Plot 2: Sync Time vs Total Data Size
+        df['total_data_mb'] = df['total_data'] / (1024 * 1024)  # Convert to MB
+        ax2.scatter(df['total_data_mb'], df['sync_time'], 
+                   c=df['file_size'], cmap='viridis', alpha=0.6)
+        ax2.set_title('Sync Time vs Total Data Size')
+        ax2.set_xlabel('Total Data Size (MB)')
+        ax2.set_ylabel('Sync Time (seconds)')
+        
+        # Add colorbar
+        norm = plt.Normalize(df['file_size'].min(), df['file_size'].max())
+        sm = plt.cm.ScalarMappable(cmap='viridis', norm=norm)
+        sm.set_array([])
+        plt.colorbar(sm, ax=ax2, label='File Size (bytes)')
+        
+        ax2.grid(True)
+        
+        # Adjust layout and save
+        plt.tight_layout()
+        plt.savefig('sync_performance_graphs.png')
         plt.close()
 
     async def run_evaluation(self):
@@ -341,21 +498,10 @@ async def main():
     evaluator = FilesystemEvaluator(config.mountpoint)
     
     try:
-        # Run original evaluations
-        # results = await evaluator.run_evaluation()
-        # print("\nEvaluation Results:")
-        # print("------------------")
-        # print(f"Resource Usage:")
-        # print(f"  CPU: {results['resource_usage']['cpu_percent']:.2f}%")
-        # print(f"  Memory: {results['resource_usage']['memory_mb']:.2f} MB")
-        # print(f"\nI/O Speed: {results['io_speed']['mb_per_second']:.2f} MB/s")
-        # print(f"Filesystem Operations: {results['fs_operations']['ops_per_second']:.2f} ops/s")
-        # print(f"Directory Operations: {results['directory_operations']['ops_per_second']:.2f} ops/s")
-        
-        # Run networked volume test
-        print("\nRunning networked volume test...")
-        csv_file = await evaluator.test_networked_volumes()
-        print(f"Networked volume test completed. Results saved to {csv_file}")
+        # Run sync performance test
+        print("\nRunning sync performance test...")
+        csv_file = await evaluator.test_sync_performance()
+        print(f"Sync performance test completed. Results saved to {csv_file}")
         
     except Exception as e:
         print(f"Error during evaluation: {e}")
