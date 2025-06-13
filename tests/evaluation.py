@@ -113,7 +113,7 @@ class FilesystemEvaluator:
         
         return num_operations * 3 / sum(operations)  # Operations per second
 
-    async def test_networked_volumes(self, duration_seconds: int = 180):
+    async def test_networked_volumes(self, duration_seconds: int = 120):
         """Test networked volumes with continuous file operations"""
         import csv
         import subprocess
@@ -128,7 +128,7 @@ class FilesystemEvaluator:
             writer.writerow(['timestamp', 'operation_type', 'file_name', 'data_written', 'peer_count', 'cumulative_files', 'cumulative_data'])
         
         
-        for peer_count in range(4, 5):
+        for peer_count in range(2, 7, 2):  # Test with 2, 4, and 6 peers
             print(f"Starting test with {peer_count} peer{'s' if peer_count > 1 else ''}...")
             # Start 4 volumes (1 primary + 3 peers)
             volumes = []
@@ -174,6 +174,7 @@ class FilesystemEvaluator:
             try:
                 # Test each operation type separately
                 for operation in ['create', 'create_with_data', 'append_data']:
+                    rows = []
                     print(f"\nTesting {operation} operations for {duration_seconds} seconds...")
                     start_time = time.time()
                     file_counter = 0
@@ -182,9 +183,6 @@ class FilesystemEvaluator:
                     
                     while time.time() - start_time < duration_seconds:
                         timestamp = time.time() - start_time
-                        
-                        # Get resource usage
-                        cpu_usage, memory_mb = self.measure_resource_usage()
                         
                         # Perform operation and track metrics
                         data_written = 0
@@ -197,7 +195,7 @@ class FilesystemEvaluator:
                         elif operation == 'create_with_data':
                             filename = f"test_file_{file_counter}.txt"
                             filepath = Path(base_mounts[0]) / filename
-                            data_written = 4096
+                            data_written = 4 # 4B of data
                             with open(filepath, 'w') as f:
                                 f.write('x' * data_written)
                             cumulative_files += 1
@@ -205,28 +203,28 @@ class FilesystemEvaluator:
                         else:  # append_data
                             filename = f"test_file_0.txt"
                             filepath = Path(base_mounts[0]) / filename
-                            data_written = 4096
+                            data_written = 4 # 4B of data
                             with open(filepath, 'a') as f:
                                 f.write('x' * data_written)
                             cumulative_data += data_written
-                        
-                        # Log operation with metrics for each peer count
-                        with open(csv_file, 'a', newline='') as f:
-                            writer = csv.writer(f)
-                            writer.writerow([
-                                timestamp,
-                                operation,
-                                filename,
-                                data_written,
-                                peer_count,
-                                cumulative_files,
-                                cumulative_data
-                            ])
-                        
+                            
                         file_counter += 1
-                        await asyncio.sleep(0.1)  # Small delay between operations
+                        # await asyncio.sleep(0.1)  # Small delay between operations
+                        # Log operation with metrics for each peer count
+                        rows.append([
+                            timestamp,
+                            operation,
+                            filename,
+                            data_written,
+                            peer_count,
+                            cumulative_files,
+                            cumulative_data
+                        ])
                     
-                    print(f"Completed {operation} operations. Created {cumulative_files} files, wrote {cumulative_data} bytes")
+                    with open(csv_file, 'a', newline='') as f:
+                        writer = csv.writer(f)
+                        writer.writerows(rows)
+                print(f"Completed {operation} operations. Created {cumulative_files} files, wrote {cumulative_data} bytes")
                     
             finally:
                 # Cleanup
@@ -239,6 +237,7 @@ class FilesystemEvaluator:
                     os.remove(f"config{i}.json")
                     # Clean up mount points
                     subprocess.run(['fusermount', '-u', base_mounts[i]], check=False)
+                    await asyncio.sleep(1)  # Ensure unmount completes
         
         # Generate graphs
         self.generate_networked_volume_graphs(csv_file)
@@ -258,7 +257,7 @@ class FilesystemEvaluator:
         
         # Plot 1: File Count over Time (for create operations)
         create_data = df[df['operation_type'] == 'create']
-        for peer_count in range(2, 5):
+        for peer_count in range(2, 7, 2):
             peer_data = create_data[create_data['peer_count'] == peer_count]
             ax1.plot(peer_data['timestamp'], peer_data['cumulative_files'], 
                     label=f'{peer_count} peer{"s" if peer_count > 1 else ""}')
@@ -270,7 +269,7 @@ class FilesystemEvaluator:
         
         # Plot 2: Data Written over Time (for create_with_data operations)
         create_with_data = df[df['operation_type'] == 'create_with_data']
-        for peer_count in range(2, 5):
+        for peer_count in range(2, 7, 2):
             peer_data = create_with_data[create_with_data['peer_count'] == peer_count]
             ax2.plot(peer_data['timestamp'], peer_data['cumulative_data'], 
                     label=f'{peer_count} peer{"s" if peer_count > 1 else ""}')
@@ -282,7 +281,7 @@ class FilesystemEvaluator:
         
         # Plot 3: Data Written over Time (for append operations)
         append_data = df[df['operation_type'] == 'append_data']
-        for peer_count in range(2, 5):
+        for peer_count in range(2, 7, 2):
             peer_data = append_data[append_data['peer_count'] == peer_count]
             ax3.plot(peer_data['timestamp'], peer_data['cumulative_data'], 
                     label=f'{peer_count} peer{"s" if peer_count > 1 else ""}')
