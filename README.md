@@ -6,8 +6,9 @@
 
 macOS
 
-Install pyfuse3:
+Install fusepy (pyfuse3 is only compatible with Linux):
 brew install --cast macfuse
+pip install fusepy
 
 Install requirements:
 pip3 install -r requirements.txt
