@@ -1,21 +1,34 @@
 from typing import override
+
+import serde
+
+from sortedcontainers import SortedDict
 from merkle_crdt.merkle_crdt import MerkleCRDT
 
+@serde
+class FugueNode:
+    key: str
 
-class MerkleLWWRegister(MerkleCRDT):
-    value: str
-    dead: set()
+class RGACRDT(MerkleCRDT):
+    root: FugueNode
+    deleted: set
 
     def __init__(self, path: str, replica: int):
         super().__init__(path, replica)
-        self.won = (0, 0)
-        self.value = ""
+        self.inner = SortedDict()
+        self.deleted = set()
 
 
     @override
     def apply_operation(self, op: list[str]):
         if len(op) == 0:
             return
+        if len(op) == 1:
+            # remove
+            pass
+        if len(op) == 3:
+            # add
+            pass
         height = int(op[0])
         replica = int(op[1])
 

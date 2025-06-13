@@ -81,8 +81,7 @@ class LWWInodeStore(InodeStore):
             if inode not in self.inodes:
                 await self._open(inode)
             contents = self.inodes[inode].read()
-            contents_decoded = base64.b64decode(contents)
-            return contents_decoded[off:off+size]
+            return contents[off:off+size]
 
     async def write(self, inode: int, off: int, buf: bytes) -> int:
         async with self.lock:
@@ -90,11 +89,9 @@ class LWWInodeStore(InodeStore):
             if inode not in self.inodes:
                 await self._open(inode)
             contents = self.inodes[inode].read()
-            contents_decoded = base64.b64decode(contents)
-            result = contents_decoded[:off] + buf + contents_decoded[off + len(buf):]
-            contents = base64.b64encode(result).decode()
+            result = contents[:off] + buf + contents[off + len(buf):]
             self.dirty.add(inode)
-            await self.inodes[inode].write(contents)
+            await self.inodes[inode].write(result)
             self.dirty.add(inode)
             return len(buf)
 
@@ -103,8 +100,8 @@ class LWWInodeStore(InodeStore):
             if inode not in self.inodes:
                 await self._open(inode)
             contents = self.inodes[inode].read()
-            contents_decoded = base64.b64decode(contents)
-            return len(contents_decoded)
+            # contents_decoded = base64.b64decode(contents)
+            return len(contents)
 
     async def _open(self, inode: int):
         # TODO: replica
