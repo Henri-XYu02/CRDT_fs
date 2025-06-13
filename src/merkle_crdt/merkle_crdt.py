@@ -8,7 +8,6 @@ import hashlib
 import time
 from serde import serde
 from serde.json import to_json, from_json
-import trio
 
 
 @serde
@@ -33,6 +32,7 @@ class MerkleCRDT:
     lock: asyncio.Lock
     fname: str
     replica: int # Randomly generated, i64 (or hash of hostname or smth)
+    incomplete_ops: list[list[str]]
 
     def __init__(self, path: str, replica: int):
         self.applied_ops = set()  # Set of applied operation hashes
@@ -43,11 +43,13 @@ class MerkleCRDT:
         new_node = self.new_node([], set())
         self.tree.nodes[new_node.hash_value] = new_node
         self.tree.root = new_node.hash_value
+        self.incomplete_ops = []
 
     async def fsync(self):
         # Serializes the CRDT to disk; takes a lock so no operations happen concurrently
         async with self.lock:
             with open(self.fname, "w") as f:
+                self._cut_root()
                 f.write(to_json(self.tree))
                 f.flush()
 
@@ -99,6 +101,7 @@ class MerkleCRDT:
     async def add_root(self, root: str):
         # IMPORTANT PRECONDITION: ALL CHILDREN OF THE ROOT MUST BE ADDED
         async with self.lock:
+            self._cut_root()
             # If new root is a subtree of us
             if root in self.applied_ops:
                 #print("DECIDED OLD ROOT", root)
@@ -144,6 +147,15 @@ class MerkleCRDT:
 
     def apply_operation(self, op: list[str]):
         # Meant to be implemented in a subclass
+        pass
+
+    def add_operation(self, op: list[str]):
+        self.apply_operation(op)
+
+    def _cut_root(self):
+        pass
+
+    def cut_root(self):
         pass
 
     def apply_operations(self, ops: list[list[str]]):

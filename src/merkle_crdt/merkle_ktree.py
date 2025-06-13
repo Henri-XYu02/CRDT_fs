@@ -43,10 +43,10 @@ class MerkleKTree(MerkleCRDT):
 
     @override
     def apply_operations(self, ops: list[list[str]]):
-        if len(ops) == 0:
-            return
         # (height, replica, parent, meta, child)
         ops_processed = [((int(i[0]), int(i[1])), int(i[2]), i[3], int(i[4])) for i in reversed(ops) if len(i) != 0]
+        if len(ops_processed) == 0:
+            return
         # Items are already ordered by timestamp, but we need to find where we start undoing
         # Already locked here
         # Undo items
@@ -82,7 +82,7 @@ class MerkleKTree(MerkleCRDT):
             # Only do LWW check for valid operations
             if v[3] not in self.childlogs:
                 self.childlogs[v[3]] = []
-            self.childlogs[v[3]].append(len(self.oplog))
+            self.childlogs[v[3]].append(len(self.oplog) - 1)
             # Now modify state
             self.ktree[v[3]] = (v[1], v[2])
             if oldp is not None and (oldp[1], v[3]) in self.child[oldp[0]]:
@@ -123,7 +123,8 @@ class MerkleKTree(MerkleCRDT):
     def move(self, op: tuple[int, str, int]):
         root = self.tree.nodes[self.tree.root]
         new_op = [str(root.height + 1), str(self.replica), str(op[0]), op[1], str(op[2])]
-        self.apply_operation(new_op)
+        self.add_operation(new_op)
+        # self.apply_operation(new_op)
         new_node = self.new_node(new_op, {self.tree.root})
         self.put_node(new_node)
         self.tree.root = new_node.hash_value

@@ -134,8 +134,6 @@ class FuseOps(pyfuse3.Operations):
             if child[0] == name_new.decode():
                 raise pyfuse3.FUSEError(errno.EEXIST)
 
-        print(parent_inode_old, name_old, parent_inode_new, name_new)
-
         for child in self.fs_structure.child[self.hf(parent_inode_old)].copy():
             if child[0] == name_old.decode():
                 await self.fs_structure.rename(child[1], self.hf(parent_inode_new), name_new.decode())
